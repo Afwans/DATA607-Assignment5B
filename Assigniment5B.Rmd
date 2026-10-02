@@ -1,0 +1,24 @@
+
+---
+title: 'Assignment 5B: ELO Calculations'
+author: "Mohd Afwan Shaikh"
+date: "2026-10-02"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    theme: yeti
+    highlight: tango
+    toc: true
+    toc_float: true
+---
+
+# Assignment 5B ELO Calculations: Approach
+
+For this assignment, I will continue working with the chess tournament data from Project 1. I will use each player's pre-tournament rating and the ratings of their individual opponents to calculate their expected tournament score using an ELO expected-score formula.
+
+I will first load the original tournament data into R and extract each player's opponents and their pre-tournament ratings. I will then calculate the expected score for each game based on the difference between the two players' ratings. I will add these values together to calculate each player's total expected score.
+
+Next, I will compare each player's expected score with their actual score and calculate the difference between the two. A positive difference will indicate that a player performed better than expected, while a negative difference will indicate that a player performed worse than expected.
+
+Finally, I will identify the five players who most overperformed and the five players who most underperformed relative to their expected scores. I will present the results in tables and cite the source of the ELO formula used in my calculations.
