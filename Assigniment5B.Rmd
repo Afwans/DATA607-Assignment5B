@@ -1,24 +1,405 @@
-
 ---
-title: 'Assignment 5B: ELO Calculations'
+title: 'Assignment 5B: Elo Calculations'
 author: "Mohd Afwan Shaikh"
 date: "2026-10-02"
 output:
-  pdf_document:
-    toc: true
   html_document:
     theme: yeti
     highlight: tango
     toc: true
     toc_float: true
+  pdf_document:
+    toc: true
+    latex_engine: xelatex
 ---
 
-# Assignment 5B ELO Calculations: Approach
 
-For this assignment, I will continue working with the chess tournament data from Project 1. I will use each player's pre-tournament rating and the ratings of their individual opponents to calculate their expected tournament score using an ELO expected-score formula.
+## Introduction and Approach
 
-I will first load the original tournament data into R and extract each player's opponents and their pre-tournament ratings. I will then calculate the expected score for each game based on the difference between the two players' ratings. I will add these values together to calculate each player's total expected score.
+For this assignment, I continued working with the chess tournament data from Project 1. I used each player's pre-tournament rating and their individual opponents' ratings to calculate expected tournament scores using the Elo expected-score formula.
 
-Next, I will compare each player's expected score with their actual score and calculate the difference between the two. A positive difference will indicate that a player performed better than expected, while a negative difference will indicate that a player performed worse than expected.
+I imported the original tournament data into R, extracted the opponents and results for each round, and matched each player with their pre-tournament rating. I then calculated the expected score for every played game and added these values to obtain each player's total expected score.
 
-Finally, I will identify the five players who most overperformed and the five players who most underperformed relative to their expected scores. I will present the results in tables and cite the source of the ELO formula used in my calculations.
+Next, I compared each player's expected score with their actual score and calculated the difference. Finally, I identified the five players who most overperformed and the five who most underperformed, presenting the results in tables and a visualization.
+
+## Data Collection and Preparation
+
+I used the original chess tournament data from Project 1. The original text file contains each player's pre-tournament rating, tournament score, and opponents for each round. I also imported my cleaned dataset to verify the player information.
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+```
+
+```{r import-data}
+# Import the cleaned tournament data
+chess_data <- read.csv("chess_tournament_clean.csv")
+
+# Read the original tournament file
+tournament_lines <- readLines("tournamentinfo.txt")
+
+# Inspect both datasets
+head(chess_data)
+names(chess_data)
+dim(chess_data)
+
+# Display the first 15 lines of the original file
+cat(tournament_lines[1:15], sep = "\n")
+```
+
+## Extracting Opponents and Game Results
+
+I extracted each player's opponents and round results from the original tournament file. These individual results allowed me to calculate an expected score for every played game using the Elo formula.
+
+```{r extract-rounds}
+# Identify player result lines (the lines beginning with a player number)
+player_lines <- tournament_lines[
+  grepl("^\\s*[0-9]+\\s*\\|", tournament_lines)
+]
+
+# Extract the seven round-result fields for each player
+round_data <- lapply(player_lines, function(line) {
+  fields <- strsplit(line, "\\|")[[1]]
+  fields <- trimws(fields)
+
+  data.frame(
+    Player_ID = as.integer(fields[1]),
+    Round = 1:7,
+    Result = fields[4:10]
+  )
+})
+
+round_data <- bind_rows(round_data)
+
+# Separate game result (W, L, D) from opponent number
+round_data <- round_data %>%
+  mutate(
+    Game_Result = str_extract(Result, "^[WLD]"),
+    Opponent_ID = as.integer(str_extract(Result, "[0-9]+$")),
+    Actual_Game_Score = case_when(
+      Game_Result == "W" ~ 1,
+      Game_Result == "D" ~ 0.5,
+      Game_Result == "L" ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+
+# Inspect the first player's seven rounds
+print(round_data %>% filter(Player_ID == 1))
+
+# Check the total number of players and rounds
+n_distinct(round_data$Player_ID)
+nrow(round_data)
+
+# Identify rounds without a recorded opponent
+print(round_data %>% filter(is.na(Opponent_ID)))
+```
+
+
+## Matching Players and Opponent Ratings
+
+I matched each player and their opponents to their pre-tournament ratings. I checked that the player names were in the same order in the original and cleaned datasets before assigning player numbers.
+
+```{r match-ratings}
+# Extract player names from the original tournament file
+original_players <- data.frame(
+  Player_ID = as.integer(
+    trimws(sapply(strsplit(player_lines, "\\|"), `[`, 1))
+  ),
+  Original_Name = trimws(
+    sapply(strsplit(player_lines, "\\|"), `[`, 2)
+  )
+)
+
+# Compare original names with the cleaned CSV
+name_check <- original_players %>%
+  mutate(
+    Cleaned_Name = chess_data$Player_Name,
+    Names_Match = toupper(trimws(Original_Name)) ==
+                  toupper(trimws(Cleaned_Name))
+  )
+
+print(name_check %>% filter(!Names_Match))
+
+# Stop if the player order does not match
+stopifnot(all(name_check$Names_Match))
+
+# Add player numbers to the cleaned dataset
+players <- chess_data %>%
+  mutate(Player_ID = original_players$Player_ID)
+
+# Attach each player's and opponent's rating
+games <- round_data %>%
+  left_join(
+    players %>% select(Player_ID, Player_Name, Pre_Rating),
+    by = "Player_ID"
+  ) %>%
+  left_join(
+    players %>%
+      select(
+        Opponent_ID = Player_ID,
+        Opponent_Rating = Pre_Rating
+      ),
+    by = "Opponent_ID"
+  )
+
+# Inspect Gary Hua's games
+print(games %>% filter(Player_ID == 1))
+```
+
+### Elo Expected-Score Formula
+
+The expected score for player A against player B is:
+
+\[
+E_A = \frac{1}{1 + 10^{(R_B-R_A)/400}}
+\]
+
+Here, \(R_A\) is the player's pre-tournament rating, \(R_B\) is the opponent's pre-tournament rating, and \(E_A\) is the expected score for that game.
+
+I used this formula to calculate the expected score for each played game, then summed the results for each player.
+
+## Calculating Elo Expected Scores
+
+I calculated each player's expected score against every opponent using the Elo expected-score formula. I then added the expected scores across all played games and compared them with the points the player actually earned in those games. Byes, forfeits, and unplayed rounds were excluded because they do not have an opponent rating.
+
+```{r calculate-elo}
+# Calculate expected scores for games with an opponent
+elo_games <- games %>%
+  filter(
+    !is.na(Opponent_ID),
+    !is.na(Pre_Rating),
+    !is.na(Opponent_Rating),
+    !is.na(Actual_Game_Score)
+  ) %>%
+  mutate(
+    Expected_Game_Score = 1 /
+      (1 + 10^((Opponent_Rating - Pre_Rating) / 400))
+  )
+
+# Add expected and actual scores for each player
+elo_results <- elo_games %>%
+  group_by(Player_ID, Player_Name, Pre_Rating) %>%
+  summarise(
+    Games_Played = n(),
+    Expected_Score = sum(Expected_Game_Score),
+    Actual_Score = sum(Actual_Game_Score),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Performance_Difference = Actual_Score - Expected_Score
+  ) %>%
+  arrange(desc(Performance_Difference))
+
+# Display Gary Hua's individual games
+print(
+  elo_games %>%
+    filter(Player_ID == 1) %>%
+    select(
+      Round,
+      Opponent_ID,
+      Opponent_Rating,
+      Actual_Game_Score,
+      Expected_Game_Score
+    )
+)
+
+# Display Gary Hua's tournament results
+print(elo_results %>% filter(Player_ID == 1))
+
+# Validate the number of records and players
+stopifnot(nrow(elo_games) == 408)
+stopifnot(nrow(elo_results) == 64)
+
+cat("Elo calculations validated successfully.\n")
+
+```
+
+The dataset contained 64 players and seven rounds, producing 448 player-round records. Of these, 40 did not have an identified opponent. I excluded those records from the Elo calculations, leaving 408 player-game records representing 204 played games.
+
+The Elo rating system estimates a player's expected score using the difference between two players' ratings. A player rated 400 points higher than an opponent has expected-score odds of 10 to 1. A win is worth one point, a draw is worth half a point, and a loss is worth zero points. I used the expected-score formula explained in *A Comprehensive Guide to Chess Ratings* by Mark E. Glickman to calculate each player's expected performance.
+
+## Identifying Overperforming and Underperforming Players
+
+I ranked the players by subtracting their expected scores from their actual scores. A positive difference indicates that a player performed better than expected, while a negative difference indicates that they performed worse than expected.
+
+```{r player-rankings, results='asis'}
+# Round values for presentation without changing the original calculations
+ranked_players <- elo_results %>%
+  mutate(
+    Expected_Score = round(Expected_Score, 2),
+    Actual_Score = round(Actual_Score, 2),
+    Performance_Difference = round(Performance_Difference, 2)
+  )
+
+# Five players who performed most above expectations
+top_overperformers <- ranked_players %>%
+  arrange(desc(Performance_Difference)) %>%
+  slice_head(n = 5)
+
+# Five players who performed most below expectations
+top_underperformers <- ranked_players %>%
+  arrange(Performance_Difference) %>%
+  slice_head(n = 5)
+
+print(
+  knitr::kable(
+    top_overperformers %>%
+      select(
+        Player_Name,
+        Pre_Rating,
+        Games_Played,
+        Expected_Score,
+        Actual_Score,
+        Performance_Difference
+      ),
+    caption = "Five Most Overperforming Players"
+  )
+)
+
+cat("\n\n")
+
+print(
+  knitr::kable(
+    top_underperformers %>%
+      select(
+        Player_Name,
+        Pre_Rating,
+        Games_Played,
+        Expected_Score,
+        Actual_Score,
+        Performance_Difference
+      ),
+    caption = "Five Most Underperforming Players"
+  )
+)
+
+```
+
+## Visualizing Player Performance
+
+The following chart compares the players who performed furthest above and below their expected scores.
+
+```{r performance-chart, fig.width=10, fig.height=6}
+performance_chart <- bind_rows(
+  top_overperformers %>% mutate(Group = "Overperformed"),
+  top_underperformers %>% mutate(Group = "Underperformed")
+) %>%
+  mutate(
+    Player_Label = paste(Player_Name, "(", Player_ID, ")")
+  )
+
+ggplot(
+  performance_chart,
+  aes(
+    x = reorder(Player_Label, Performance_Difference),
+    y = Performance_Difference,
+    fill = Group
+  )
+) +
+  geom_col() +
+  geom_hline(yintercept = 0, color = "gray40") +
+  coord_flip() +
+  labs(
+    title = "Chess Tournament: Actual vs. Expected Performance",
+    x = "Player",
+    y = "Actual Score − Expected Score",
+    fill = "Performance"
+  ) +
+  theme_minimal()
+```
+
+
+## Relationship Between Pre-Tournament Rating and Performance
+
+I wanted to investigate whether players with higher pre-tournament ratings were more likely to perform above expectations. To explore this relationship, I compared each player's pre-tournament rating with the difference between their actual and expected scores.
+
+A positive performance difference indicates that a player exceeded expectations, while a negative difference indicates that they performed below expectations.
+
+```{r rating-performance-plot, fig.width=9, fig.height=6}
+ggplot(
+  elo_results,
+  aes(
+    x = Pre_Rating,
+    y = Performance_Difference
+  )
+) +
+  geom_point(
+    color = "steelblue",
+    size = 3,
+    alpha = 0.7
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "red"
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Pre-Tournament Rating vs. Performance",
+    subtitle = "Comparison of all 64 chess players",
+    x = "Pre-Tournament Rating",
+    y = "Actual Score - Expected Score"
+  ) +
+  theme_minimal()
+```
+
+```{r rating-performance-correlation}
+correlation <- cor(
+  elo_results$Pre_Rating,
+  elo_results$Performance_Difference,
+  use = "complete.obs"
+)
+
+cat(
+  "Correlation between pre-tournament rating and performance:",
+  round(correlation, 3)
+)
+```
+
+### Relationship Between Rating and Performance
+
+The correlation between pre-tournament rating and performance difference was **−0.325**, indicating a weak-to-moderate negative relationship.
+
+The scatter plot shows a downward trend, suggesting that lower-rated players generally performed better relative to their expected scores, while higher-rated players were somewhat more likely to perform below expectations.
+
+However, the points are widely scattered, indicating that pre-tournament rating alone does not strongly predict whether a player will exceed expectations. This relationship describes the 64 players in this tournament and does not necessarily apply to other tournaments.
+
+
+## Findings and Discussion
+
+### Players Who Overperformed
+
+Aditya Bajaj had the largest positive difference between his actual and expected scores. Zachary James Houghton, Anvit Rao, Jacob Alexander Lavalley, and Stefano Lee were the other four highest overperformers.
+
+These players earned more points than predicted by their pre-tournament ratings and the ratings of their opponents.
+
+### Players Who Underperformed
+
+Loren Schwiebert had the largest negative performance difference. His expected score was 6.28 points, but he earned only 3.50 points in played games, a difference of −2.78 points.
+
+George Avery Jones was next, with a difference of −2.52 points, followed by Larry Hodge (−2.40), Jared Ge (−2.01), and Rishi Shetty (−1.59).
+
+### Interpreting the Results
+
+The Elo expected-score formula estimates a player's expected performance based on the difference between their rating and their opponent's rating. It does not guarantee the outcome of an individual game.
+
+For this analysis, I excluded byes, forfeits, and unplayed rounds from both expected and actual scores. This allowed me to compare the points earned in played games with the points predicted for those same games.
+
+## Conclusion
+
+Using the Elo expected-score formula, I calculated expected scores for all 64 players in the chess tournament and compared them with their actual results. I identified the five players who most exceeded expectations and the five players who fell furthest below expectations.
+
+I also examined the relationship between pre-tournament rating and performance difference. The correlation was −0.325, indicating a weak-to-moderate negative relationship. In this tournament, lower-rated players tended to perform better relative to their expected scores, although the relationship was not strong.
+
+Overall, this analysis demonstrated how Elo ratings can estimate tournament performance and how actual results can differ from those expectations.
+
+
+## References
+
+Glickman, M. E. *A Comprehensive Guide to Chess Ratings*. https://www.glicko.net/research/acjpaper.pdf
